@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Email Pemberitahuan</title>
+</head>
+<body style="font-family: Arial, sans-serif; text-align: center; padding: 20px;">
+    <h2>Halo, {nama_penerima}!</h2>
+    <p>
+        Ini adalah email yang dikirim dari <strong>{nama_pengirim}</strong>.
+    </p>
+    <p>
+        Kami ingin memberitahukan Anda tentang penawaran spesial kami. Jangan lewatkan kesempatan ini!
+    </p>
+    
+    <!-- Tombol Ajakan dengan Link Dinamis -->
+    <a href="{shortlink}" style="background-color: #007bff; color: white; padding: 15px 25px; text-decoration: none; border-radius: 5px; display: inline-block; margin: 20px 0;">
+        Klaim Penawaran Sekarang!
+    </a>
+
+    <hr>
+    <p style="font-size: 12px; color: #888;">
+        Email ini dikirim ke: {email_penerima}<br>
+        Tanggal: {tanggal}<br>
+        Negara Asal: {negara}<br>
+        Perangkat: {perangkat}
+    </p>
+    <p style="font-size: 12px; color: #888;">
+        Email acak untuk referensi: {email_acak}
+    </p>
+</body>
+</html>

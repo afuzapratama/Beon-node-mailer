@@ -1,0 +1,23 @@
+{
+ "name": "beon-mailer-node",
+ "version": "1.0.0",
+ "description": "Aplikasi mailer CLI berbasis Node.js",
+ "main": "index.js",
+ "scripts": {
+  "start": "node index.js"
+ },
+ "keywords": [
+  "mailer",
+  "cli",
+  "nodemailer"
+ ],
+ "author": "",
+ "license": "ISC",
+ "dependencies": {
+  "@faker-js/faker": "^9.9.0",
+  "chalk": "^4.1.2",
+  "dotenv": "^17.2.0",
+  "inquirer": "^8.2.6",
+  "nodemailer": "^7.0.5"
+ }
+}

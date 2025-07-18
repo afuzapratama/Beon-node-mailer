@@ -1,0 +1,148 @@
+iPhone 6 Plus
+iPhone 6
+iPhone 6s
+iPhone 6s Plus
+iPhone SE (GSM)
+iPhone 7
+iPhone 7 Plus
+iPhone X Global
+iPhone 8
+iPhone 8 Plus
+iPhone X GSM
+iPhone XS
+iPhone XS Max
+iPhone XS Max Global
+iPhone XR
+iPhone 11
+iPhone 11 Pro
+iPhone 11 Pro Max
+iPhone SE 2nd Gen
+iPhone 12 Mini
+iPhone 12
+iPhone 12 Pro
+iPhone 12 Pro Max
+iPhone 13 Pro
+iPhone 13 Pro Max
+iPhone 13 Mini
+iPhone 13
+iPhone SE 3rd Gen
+iPhone 14
+iPhone 14 Plus
+iPhone 14 Pro
+iPhone 14 Pro Max
+iPad
+iPad 3G
+2nd Gen iPad
+2nd Gen iPad GSM
+2nd Gen iPad CDMA
+2nd Gen iPad New Revision
+3rd Gen iPad
+3rd Gen iPad CDMA
+3rd Gen iPad GSM
+iPad mini
+iPad mini GSM+LTE
+iPad mini CDMA+LTE
+4th Gen iPad
+4th Gen iPad GSM+LTE
+4th Gen iPad CDMA+LTE
+iPad Air (WiFi)
+iPad Air (GSM+CDMA)
+1st Gen iPad Air (China)
+iPad mini Retina (WiFi)
+iPad mini Retina (GSM+CDMA)
+iPad mini Retina (China)
+iPad mini 3 (WiFi)
+iPad mini 3 (GSM+CDMA)
+iPad Mini 3 (China)
+iPad mini 4 (WiFi)
+4th Gen iPad mini (WiFi+Cellular)
+iPad Air 2 (WiFi)
+iPad Air 2 (Cellular)
+iPad Pro (9.7 inch, WiFi)
+iPad Pro (9.7 inch, WiFi+LTE)
+iPad Pro (12.9 inch, WiFi)
+iPad Pro (12.9 inch, WiFi+LTE)
+iPad (2017)
+iPad Pro 2nd Gen (WiFi)
+iPad Pro 2nd Gen (WiFi+Cellular)
+iPad Pro 10.5-inch 2nd Gen
+iPad 6th Gen (WiFi)
+iPad 6th Gen (WiFi+Cellular)
+iPad 7th Gen 10.2-inch (WiFi)
+iPad 7th Gen 10.2-inch (WiFi+Cellular)
+iPad Pro 11 inch 3rd Gen (WiFi)
+iPad Pro 11 inch 3rd Gen (1TB, WiFi)
+iPad Pro 11 inch 3rd Gen (WiFi+Cellular)
+iPad Pro 11 inch 3rd Gen (1TB, WiFi+Cellular)
+iPad Pro 12.9 inch 3rd Gen (WiFi)
+iPad Pro 12.9 inch 3rd Gen (1TB, WiFi)
+iPad Pro 12.9 inch 3rd Gen (WiFi+Cellular)
+iPad Pro 12.9 inch 3rd Gen (1TB, WiFi+Cellular)
+iPad Pro 11 inch 4th Gen (WiFi)
+iPad Pro 11 inch 4th Gen (WiFi+Cellular)
+iPad Pro 12.9 inch 4th Gen (WiFi)
+iPad Pro 12.9 inch 4th Gen (WiFi+Cellular)
+iPad mini 5th Gen (WiFi)
+iPad mini 5th Gen
+iPad Air 3rd Gen (WiFi)
+iPad Air 3rd Gen
+iPad 8th Gen (WiFi)
+iPad 8th Gen (WiFi+Cellular)
+iPad 9th Gen (WiFi)
+iPad 9th Gen (WiFi+Cellular)
+iPad mini 6th Gen (WiFi)
+iPad mini 6th Gen (WiFi+Cellular)
+iPad Air 4th Gen (WiFi)
+iPad Air 4th Gen (WiFi+Cellular)
+iPad Pro 11 inch 5th Gen
+iPad Pro 12.9 inch 5th Gen
+iPad Air 5th Gen (WiFi)
+iPad Air 5th Gen (WiFi+Cellular)
+iPad 10th Gen
+iPad Pro 11 inch 4th Gen
+iPad Pro 12.9 inch 6th Gen
+Samsung Galaxy Xcover Pro
+Samsung Galaxy Note10 Lite
+Samsung Galaxy S10 Lite
+Samsung Galaxy A01
+Samsung Galaxy A71
+Samsung Galaxy A51
+Samsung Galaxy Xcover Field Pro
+Samsung Galaxy A70s
+Samsung Galaxy A20s
+Samsung Galaxy M30s
+Samsung Galaxy M10s
+Samsung Galaxy Fold 5G
+Samsung Galaxy Fold
+Samsung Galaxy Tab Active Pro
+Samsung Galaxy A90 5G
+Samsung Galaxy A30s
+Samsung Galaxy A50s
+Samsung Galaxy Note10+ 5G
+Samsung Galaxy Note10+
+Samsung Galaxy Note10
+Samsung Galaxy Tab S6
+Samsung Galaxy Note9
+Samsung Galaxy S9
+Samsung Galaxy S8+
+Samsung Galaxy A8
+Samsung Galaxy S9+
+Motorolla Phone
+Xiaomi Phone
+Nokia Phone
+Acer Phone
+Lenovo Phone
+Sharp Phone
+LG Phone
+Sony Phone
+Google Phone
+Asus Phone
+Asus Republic Of Gamers
+Huawei Phone
+Microsoft Phone
+Vivo Phone
+Oppo Phone
+Meizu Phone
+Realme Phone
+Vodafone Phone
+Blackberry Phone
