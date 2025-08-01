@@ -12,11 +12,13 @@ require('dotenv').config();
 
 // --- Fungsi untuk Tampilan Log ---
 function logSuccess(details) {
-    const { targetEmail, fromMail, fromName, subject, shortlink, smtpHost, currentIndex, totalEmails, delay } = details;
+    const { targetEmail, fromMail, fromName, subject, shortlink, smtpHost, currentIndex, totalEmails, delay, isBatch } = details;
     let domainOnly = shortlink;
     try { const urlObject = new URL(shortlink); domainOnly = urlObject.hostname; } catch (e) { domainOnly = shortlink; }
     const border = '||' + '='.repeat(75);
     const line = '||' + '-'.repeat(75);
+    const delayText = isBatch ? 'Antar Batch' : 'Per Email';
+
     console.log(chalk.bold.white(border));
     console.log(`${chalk.bold.white('||')} ${chalk.bold.magenta('📨 SEND TO')}         : ${chalk.yellow(targetEmail)}`);
     console.log(`${chalk.bold.white('||')} ${chalk.bold.magenta('📮 FROM MAIL')}        : ${chalk.cyan(fromMail)}`);
@@ -26,11 +28,10 @@ function logSuccess(details) {
     console.log(chalk.bold.white(line));
     console.log(`${chalk.bold.white('||')} ${chalk.bold.red('💻 SMTP')}             : ${chalk.red(smtpHost)}`);
     console.log(`${chalk.bold.white('||')} ${chalk.bold.red('🛒 TOTAL SEND')}       : ${chalk.red(`${currentIndex} / ${totalEmails}`)}`);
-    console.log(`${chalk.bold.white('||')} ${chalk.bold.red('🕥 DELAY')}            : ${chalk.red(`${delay} SEC (Antar Batch)`)}`);
+    console.log(`${chalk.bold.white('||')} ${chalk.bold.red('🕥 DELAY')}            : ${chalk.red(`${delay} SEC (${delayText})`)}`);
     console.log(chalk.bold.white(border) + '\n');
 }
 
-// *** BARU: logError sekarang menerima parameter isDebug ***
 function logError(error, targetEmail, isDebug) {
     const border = '||' + '='.repeat(75);
     console.log(chalk.bold.red(border));
@@ -42,14 +43,12 @@ function logError(error, targetEmail, isDebug) {
     }
     console.log(`${chalk.bold.red('||')} ${chalk.white('😭 Error Message:')}    ${chalk.yellow(error.message)}`);
     console.log(chalk.bold.red(border));
-
-    // *** BARU: Tampilkan detail error jika debug mode aktif ***
     if (isDebug) {
         console.log(chalk.bold.yellow('\n--- DEBUG STACK TRACE ---'));
         console.error(error);
         console.log(chalk.bold.yellow('-------------------------\n'));
     } else {
-        console.log('\n'); // Beri spasi seperti biasa jika tidak debug
+        console.log('\n');
     }
 }
 
@@ -76,34 +75,81 @@ function processDynamicPlaceholders(text) {
     });
 }
 
-
-// --- Helper untuk data acak (Generator) ---
+// --- Helper untuk data acak ---
 const countries = fs.readFileSync(path.join(__dirname, 'data', 'country.txt'), 'utf-8').split('\n').map(line => line.trim()).filter(Boolean);
 const devices = fs.readFileSync(path.join(__dirname, 'data', 'device.txt'), 'utf-8').split('\n').map(line => line.trim()).filter(Boolean);
 const linkTemplates = fs.readFileSync(path.join(__dirname, 'links', 'links.txt'), 'utf-8').split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('#'));
 const getRandomItem = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
+// --- Fungsi untuk memproses satu email ---
+async function processAndSendSingleEmail(details) {
+    const { 
+        transporter, targetEmail, selectedHostname, 
+        rawSenderNameTemplate, rawSubjectTemplate, rawCustomFromTemplate, 
+        rawLetterTemplate, emailPriority, useMinimalHeaders 
+    } = details;
+
+    const processedSenderName = processDynamicPlaceholders(rawSenderNameTemplate);
+    const processedSubject = processDynamicPlaceholders(rawSubjectTemplate);
+    const fromEmail = rawCustomFromTemplate ? processDynamicPlaceholders(rawCustomFromTemplate) : process.env.SMTP_USER;
+    
+    let processedLetter = processDynamicPlaceholders(rawLetterTemplate);
+    let finalLink = '#';
+    if (linkTemplates.length > 0) {
+        const randomLinkTemplate = getRandomItem(linkTemplates);
+        if (randomLinkTemplate) {
+            let processedLink = randomLinkTemplate.replace(/{email_penerima}/g, targetEmail);
+            finalLink = processDynamicPlaceholders(processedLink);
+        }
+    }
+    
+    const recipientName = targetEmail.split('@')[0].replace(/[\._0-9]/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+    processedLetter = processedLetter
+        .replace(/{email_penerima}/g, targetEmail).replace(/{nama_penerima}/g, recipientName)
+        .replace(/{nama_pengirim}/g, processedSenderName).replace(/{tanggal}/g, new Date().toLocaleDateString('id-ID', { dateStyle: 'full' }))
+        .replace(/{negara}/g, getRandomItem(countries)).replace(/{perangkat}/g, getRandomItem(devices))
+        .replace(/{email_acak}/g, faker.internet.email()).replace(/{nama_acak}/g, faker.person.fullName())
+        .replace(/{shortlink}/g, finalLink);
+
+    const messageId = `<${crypto.randomBytes(16).toString('hex')}@${selectedHostname}>`;
+    const headers = { 'Message-ID': messageId };
+
+    if (!useMinimalHeaders) {
+        const priorityMap = { high: '1 (Highest)', normal: '3 (Normal)', low: '5 (Lowest)' };
+        headers['X-Priority'] = priorityMap[emailPriority] || '3 (Normal)';
+        // headers['X-Mailer'] = 'nodemailer';
+        headers['X-NSS'] = crypto.randomBytes(16).toString('hex');
+    }
+
+    const mailOptions = { 
+        from: `"${processedSenderName}" <${fromEmail}>`, to: targetEmail, 
+        subject: processedSubject, html: processedLetter, headers: headers
+    };
+
+    await transporter.sendMail(mailOptions);
+    return { fromEmail, processedSenderName, processedSubject, finalLink };
+}
+
+
 // --- Fungsi Utama Pengiriman Email ---
 async function sendMail(options) {
     // --- 1. MEMBACA SEMUA KONFIGURASI DARI .ENV ---
+    const enableBatchSending = process.env.ENABLE_BATCH_SENDING === 'true';
     const debugMode = process.env.DEBUG_MODE === 'true';
     const rawHostnameTemplate = process.env.SMTP_HOSTNAME || 'localhost';
-
-        // *** LOGIKA BARU: Proses hostname di awal sesi ***
+    
     const selectedHostname = processDynamicPlaceholders(rawHostnameTemplate);
-    console.log(chalk.blue(`\nHostname untuk sesi ini: ${selectedHostname}`));
+    if (!debugMode) { console.log(chalk.blue(`\nHostname untuk sesi ini: ${selectedHostname}`)); }
 
     const transporterConfig = {
-        pool: true,
+        pool: enableBatchSending, // Menggunakan pool hanya jika batch aktif
         host: process.env.SMTP_HOST,
         port: parseInt(process.env.SMTP_PORT, 10),
         secure: process.env.SMTP_SECURE === 'true',
         auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
         tls: { rejectUnauthorized: false },
-        // Menggunakan hostname yang sudah diacak untuk seluruh sesi
         name: selectedHostname,
     };
-
 
     if (debugMode) {
         console.log(chalk.bold.yellow.inverse('\n DEBUG MODE IS ON \n'));
@@ -113,22 +159,27 @@ async function sendMail(options) {
 
     const transporter = nodemailer.createTransport(transporterConfig);
 
-    const rawSenderNameTemplate = process.env.SENDER_NAME || 'Pengirim Default';
-    const rawSubjectTemplate = process.env.EMAIL_SUBJECT || 'Subjek Default';
-    const rawCustomFromTemplate = process.env.CUSTOM_FROM_EMAIL;
+    const emailConfig = {
+        rawSenderNameTemplate: process.env.SENDER_NAME || 'Pengirim Default',
+        rawSubjectTemplate: process.env.EMAIL_SUBJECT || 'Subjek Default',
+        rawCustomFromTemplate: process.env.CUSTOM_FROM_EMAIL,
+        letterPath: path.join(__dirname, process.env.LETTER_PATH || 'letters/letter.html'),
+        emailPriority: process.env.EMAIL_PRIORITY || 'normal',
+        useMinimalHeaders: process.env.USE_MINIMAL_HEADERS === 'true',
+    };
+    emailConfig.rawLetterTemplate = fs.readFileSync(emailConfig.letterPath, 'utf-8');
 
-    const letterPath = path.join(__dirname, process.env.LETTER_PATH || 'letters/letter.html');
-    const rawLetterTemplate = fs.readFileSync(letterPath, 'utf-8');
-    const emailPriority = process.env.EMAIL_PRIORITY || 'normal';
-    const batchSize = parseInt(process.env.SEND_BATCH_SIZE, 10) || 1;
-    const batchDelay = parseInt(process.env.BATCH_DELAY_SECONDS, 10) || 1;
-    const removeDuplicates = process.env.REMOVE_DUPLICATE_EMAILS === 'true';
-    const removeSentEmails = process.env.REMOVE_SENT_EMAIL_FROM_LIST === 'true';
+    const sendConfig = {
+        batchSize: parseInt(process.env.BATCH_SIZE, 10) || 10,
+        delay: parseInt(process.env.SEND_DELAY_SECONDS, 10) || 1,
+        removeDuplicates: process.env.REMOVE_DUPLICATE_EMAILS === 'true',
+        removeSentEmails: process.env.REMOVE_SENT_EMAIL_FROM_LIST === 'true',
+    };
 
     // --- 2. PERSIAPAN DAFTAR EMAIL ---
     let allLines = fs.readFileSync(options.emailListPath, 'utf-8').split('\n').map(line => line.trim()).filter(Boolean);
     let emailListToSend;
-    if (removeDuplicates) {
+    if (sendConfig.removeDuplicates) {
         const originalCount = allLines.length;
         emailListToSend = [...new Set(allLines)];
         if (originalCount !== emailListToSend.length) {
@@ -138,68 +189,79 @@ async function sendMail(options) {
         emailListToSend = allLines;
     }
     
-    // --- 3. MEMBUAT BATCH (CHUNK) DARI DAFTAR EMAIL ---
-    const emailChunks = [];
-    for (let i = 0; i < emailListToSend.length; i += batchSize) {
-        emailChunks.push(emailListToSend.slice(i, i + batchSize));
-    }
-
-    console.log(chalk.yellow(`\nTotal email akan dikirim: ${emailListToSend.length} dalam ${emailChunks.length} batch.`));
+    console.log(chalk.yellow(`\nTotal email akan dikirim: ${emailListToSend.length}. Mode Batch: ${enableBatchSending ? 'ON' : 'OFF'}`));
     
     let successCount = 0, failCount = 0, totalSent = 0;
     const successfullySentEmails = new Set();
 
-    // --- 4. PROSES PENGIRIMAN PER BATCH ---
-  for (let i = 0; i < emailChunks.length; i++) {
-        const chunk = emailChunks[i];
-        console.log(chalk.bold.blue(`\n--- Mengirim Batch ${i + 1} dari ${emailChunks.length} (${chunk.length} email) ---`));
+    // --- 3. PROSES PENGIRIMAN SESUAI MODE ---
+    if (enableBatchSending) {
+        // --- MODE BATCH ---
+        const emailChunks = [];
+        for (let i = 0; i < emailListToSend.length; i += sendConfig.batchSize) {
+            emailChunks.push(emailListToSend.slice(i, i + sendConfig.batchSize));
+        }
 
-        const promises = chunk.map(async (targetEmail) => {
-            try {
-                const processedSenderName = processDynamicPlaceholders(rawSenderNameTemplate);
-                const processedSubject = processDynamicPlaceholders(rawSubjectTemplate);
-                const fromEmail = rawCustomFromTemplate ? processDynamicPlaceholders(rawCustomFromTemplate) : process.env.SMTP_USER;
-                
-                let processedLetter = processDynamicPlaceholders(rawLetterTemplate);
-                let finalLink = '#';
-                if (linkTemplates.length > 0){
-                    const randomLinkTemplate = getRandomItem(linkTemplates);
-                    if (randomLinkTemplate) {
-                        let processedLink = randomLinkTemplate.replace(/{email_penerima}/g, targetEmail);
-                        finalLink = processDynamicPlaceholders(processedLink);
-                    }
+        for (let i = 0; i < emailChunks.length; i++) {
+            const chunk = emailChunks[i];
+            console.log(chalk.bold.blue(`\n--- Mengirim Batch ${i + 1} dari ${emailChunks.length} (${chunk.length} email) ---`));
+
+            const promises = chunk.map(async (targetEmail) => {
+                try {
+                    const sentDetails = await processAndSendSingleEmail({ ...emailConfig, transporter, targetEmail, selectedHostname });
+                    totalSent++;
+                    // *** PERBAIKAN DI SINI ***
+                    logSuccess({
+                        targetEmail,
+                        fromMail: sentDetails.fromEmail,
+                        fromName: sentDetails.processedSenderName,
+                        subject: sentDetails.processedSubject,
+                        shortlink: sentDetails.finalLink,
+                        smtpHost: process.env.SMTP_HOST,
+                        currentIndex: totalSent,
+                        totalEmails: emailListToSend.length,
+                        delay: sendConfig.delay,
+                        isBatch: true
+                    });
+                    successCount++;
+                    successfullySentEmails.add(targetEmail);
+                } catch (error) {
+                    totalSent++;
+                    logError(error, targetEmail, debugMode);
+                    failCount++;
                 }
-                
-                const recipientName = targetEmail.split('@')[0].replace(/[\._0-9]/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-                processedLetter = processedLetter
-                    .replace(/{email_penerima}/g, targetEmail).replace(/{nama_penerima}/g, recipientName)
-                    .replace(/{nama_pengirim}/g, processedSenderName).replace(/{tanggal}/g, new Date().toLocaleDateString('id-ID', { dateStyle: 'full' }))
-                    .replace(/{negara}/g, getRandomItem(countries)).replace(/{perangkat}/g, getRandomItem(devices))
-                    .replace(/{email_acak}/g, faker.internet.email()).replace(/{nama_acak}/g, faker.person.fullName())
-                    .replace(/{shortlink}/g, finalLink);
+            });
+            await Promise.all(promises);
 
-                // Menggunakan hostname terpilih untuk Message-ID
-                const messageId = `<${crypto.randomBytes(16).toString('hex')}@${selectedHostname}>`;
-                const priorityMap = { high: '1 (Highest)', normal: '3 (Normal)', low: '5 (Lowest)' };
-
-                const mailOptions = { 
-                    from: `"${processedSenderName}" <${fromEmail}>`,
-                    to: targetEmail, 
-                    subject: processedSubject,
-                    html: processedLetter,
-                    headers: {
-                        'X-Priority': priorityMap[emailPriority] || '3 (Normal)',
-                        'X-Mailer': '(Node.js)',
-                        'Message-ID': messageId
-                    }
-                };
-
-                await transporter.sendMail(mailOptions);
+            if (i < emailChunks.length - 1) {
+                console.log(chalk.yellow(`--- Batch ${i + 1} selesai. Jeda selama ${sendConfig.delay} detik... ---`));
+                await new Promise(resolve => setTimeout(resolve, sendConfig.delay * 1000));
+            }
+        }
+    } else {
+        // --- MODE SATU PER SATU ---
+        for (let i = 0; i < emailListToSend.length; i++) {
+            const targetEmail = emailListToSend[i];
+            try {
+                const sentDetails = await processAndSendSingleEmail({ 
+                    ...emailConfig, 
+                    transporter, 
+                    targetEmail, 
+                    selectedHostname 
+                });
                 totalSent++;
-                logSuccess({
-                    targetEmail, fromMail: fromEmail, fromName: processedSenderName, subject: processedSubject, 
-                    shortlink: finalLink, smtpHost: process.env.SMTP_HOST,
-                    currentIndex: totalSent, totalEmails: emailListToSend.length, delay: batchDelay
+                // *** PERBAIKAN DI SINI ***
+                logSuccess({ 
+                    targetEmail,
+                    fromMail: sentDetails.fromEmail,
+                    fromName: sentDetails.processedSenderName,
+                    subject: sentDetails.processedSubject,
+                    shortlink: sentDetails.finalLink,
+                    smtpHost: process.env.SMTP_HOST, 
+                    currentIndex: totalSent, 
+                    totalEmails: emailListToSend.length, 
+                    delay: sendConfig.delay, 
+                    isBatch: false 
                 });
                 successCount++;
                 successfullySentEmails.add(targetEmail);
@@ -208,18 +270,15 @@ async function sendMail(options) {
                 logError(error, targetEmail, debugMode);
                 failCount++;
             }
-        });
 
-        await Promise.all(promises);
-
-        if (i < emailChunks.length - 1) {
-            console.log(chalk.yellow(`--- Batch ${i + 1} selesai. Jeda selama ${batchDelay} detik... ---`));
-            await new Promise(resolve => setTimeout(resolve, batchDelay * 1000));
+            if (i < emailListToSend.length - 1) {
+                await new Promise(resolve => setTimeout(resolve, sendConfig.delay * 1000));
+            }
         }
     }
     
-     // --- 5. PERBARUI FILE LIST SETELAH SEMUA SELESAI ---
-    if (removeSentEmails && successfullySentEmails.size > 0) {
+    // --- 4. PERBARUI FILE LIST SETELAH SEMUA SELESAI ---
+    if (sendConfig.removeSentEmails && successfullySentEmails.size > 0) {
         const remainingEmails = allLines.filter(email => !successfullySentEmails.has(email));
         try {
             fs.writeFileSync(options.emailListPath, remainingEmails.join('\n'));
@@ -229,10 +288,10 @@ async function sendMail(options) {
         }
     }
 
-    console.log(chalk.bold.blue('\n================ SEMUA BATCH SELESAI ================'));
+    console.log(chalk.bold.blue('\n================ SEMUA PROSES SELESAI ================'));
     console.log(chalk.bold.green(`  Berhasil terkirim : ${successCount}`));
     console.log(chalk.bold.red(`  Gagal terkirim    : ${failCount}`));
-    console.log(chalk.bold.blue('====================================================='));
+    console.log(chalk.bold.blue('======================================================'));
 }
 
 module.exports = { sendMail };

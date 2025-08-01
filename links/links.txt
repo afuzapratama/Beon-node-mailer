@@ -1,1 +1,1 @@
-https://google.com/penawaran-spesial?user={email_penerima}&track={generateid}
+https://redirect-main-production.up.railway.app/?{lowercase_8}&user={email_penerima}&track={numeric_17}
