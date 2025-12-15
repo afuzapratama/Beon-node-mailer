@@ -10,6 +10,68 @@ const { URL } = require('url');
 // Muat variabel dari .env
 require('dotenv').config();
 
+// --- Fungsi Validasi Environment Variables ---
+function validateEnvConfig() {
+    const required = [
+        { key: 'SMTP_HOST', desc: 'SMTP server hostname' },
+        { key: 'SMTP_PORT', desc: 'SMTP server port' },
+        { key: 'SMTP_USER', desc: 'SMTP username/email' },
+        { key: 'SMTP_PASS', desc: 'SMTP password' },
+    ];
+
+    const missing = required.filter(item => !process.env[item.key]);
+    
+    if (missing.length > 0) {
+        console.log(chalk.bold.red('\n╔════════════════════════════════════════════════════════════════╗'));
+        console.log(chalk.bold.red('║           ⚠️  KONFIGURASI .ENV TIDAK LENGKAP                   ║'));
+        console.log(chalk.bold.red('╠════════════════════════════════════════════════════════════════╣'));
+        missing.forEach(item => {
+            console.log(chalk.bold.red(`║  ❌ ${item.key.padEnd(20)} - ${item.desc.padEnd(30)}  ║`));
+        });
+        console.log(chalk.bold.red('╠════════════════════════════════════════════════════════════════╣'));
+        console.log(chalk.bold.red('║  Pastikan file .env sudah dibuat dan diisi dengan benar!       ║'));
+        console.log(chalk.bold.red('║  Lihat .env.example untuk referensi.                           ║'));
+        console.log(chalk.bold.red('╚════════════════════════════════════════════════════════════════╝\n'));
+        return false;
+    }
+
+    // Validasi SMTP_PORT adalah angka
+    const port = parseInt(process.env.SMTP_PORT, 10);
+    if (isNaN(port) || port < 1 || port > 65535) {
+        console.log(chalk.bold.red('\n❌ SMTP_PORT harus berupa angka valid (1-65535)\n'));
+        return false;
+    }
+
+    return true;
+}
+
+// --- Fungsi Test Koneksi SMTP ---
+async function testSmtpConnection(transporter) {
+    try {
+        console.log(chalk.blue('\n🔌 Menguji koneksi SMTP...'));
+        await transporter.verify();
+        console.log(chalk.green('✅ Koneksi SMTP berhasil!\n'));
+        return true;
+    } catch (error) {
+        console.log(chalk.bold.red('\n╔════════════════════════════════════════════════════════════════╗'));
+        console.log(chalk.bold.red('║              ❌ KONEKSI SMTP GAGAL                              ║'));
+        console.log(chalk.bold.red('╠════════════════════════════════════════════════════════════════╣'));
+        console.log(chalk.bold.red(`║  Host: ${(process.env.SMTP_HOST || '').padEnd(52)}  ║`));
+        console.log(chalk.bold.red(`║  Port: ${(process.env.SMTP_PORT || '').padEnd(52)}  ║`));
+        console.log(chalk.bold.red(`║  User: ${(process.env.SMTP_USER || '').substring(0, 50).padEnd(52)}  ║`));
+        console.log(chalk.bold.red('╠════════════════════════════════════════════════════════════════╣'));
+        console.log(chalk.bold.red(`║  Error: ${error.message.substring(0, 50).padEnd(51)}  ║`));
+        console.log(chalk.bold.red('╠════════════════════════════════════════════════════════════════╣'));
+        console.log(chalk.bold.red('║  Periksa kembali:                                              ║'));
+        console.log(chalk.bold.red('║  • Kredensial SMTP (user/password)                             ║'));
+        console.log(chalk.bold.red('║  • Host dan port SMTP                                          ║'));
+        console.log(chalk.bold.red('║  • Koneksi internet                                            ║'));
+        console.log(chalk.bold.red('║  • Firewall/antivirus yang memblokir                           ║'));
+        console.log(chalk.bold.red('╚════════════════════════════════════════════════════════════════╝\n'));
+        return false;
+    }
+}
+
 // --- Fungsi untuk Tampilan Log ---
 function logSuccess(details) {
     const { targetEmail, fromMail, fromName, subject, shortlink, smtpHost, currentIndex, totalEmails, delay, isBatch } = details;
@@ -133,9 +195,18 @@ async function processAndSendSingleEmail(details) {
 
 // --- Fungsi Utama Pengiriman Email ---
 async function sendMail(options) {
+    // --- 0. VALIDASI KONFIGURASI ---
+    if (!validateEnvConfig()) {
+        console.log(chalk.red('Proses dibatalkan karena konfigurasi tidak valid.'));
+        return;
+    }
+
     // --- 1. MEMBACA SEMUA KONFIGURASI DARI .ENV ---
     const enableBatchSending = process.env.ENABLE_BATCH_SENDING === 'true';
     const debugMode = process.env.DEBUG_MODE === 'true';
+    const retryAttempts = parseInt(process.env.RETRY_ATTEMPTS, 10) || 0;
+    const retryDelay = parseInt(process.env.RETRY_DELAY_SECONDS, 10) || 3;
+    const enableLogging = process.env.ENABLE_FILE_LOGGING === 'true';
     const rawHostnameTemplate = process.env.SMTP_HOSTNAME || 'localhost';
     
     const selectedHostname = processDynamicPlaceholders(rawHostnameTemplate);
@@ -159,6 +230,13 @@ async function sendMail(options) {
 
     const transporter = nodemailer.createTransport(transporterConfig);
 
+    // --- TEST KONEKSI SMTP ---
+    const isConnected = await testSmtpConnection(transporter);
+    if (!isConnected) {
+        console.log(chalk.red('Proses dibatalkan karena koneksi SMTP gagal.'));
+        return;
+    }
+
     const emailConfig = {
         rawSenderNameTemplate: process.env.SENDER_NAME || 'Pengirim Default',
         rawSubjectTemplate: process.env.EMAIL_SUBJECT || 'Subjek Default',
@@ -174,7 +252,19 @@ async function sendMail(options) {
         delay: parseInt(process.env.SEND_DELAY_SECONDS, 10) || 1,
         removeDuplicates: process.env.REMOVE_DUPLICATE_EMAILS === 'true',
         removeSentEmails: process.env.REMOVE_SENT_EMAIL_FROM_LIST === 'true',
+        retryAttempts,
+        retryDelay,
+        enableLogging,
     };
+
+    // --- SETUP LOG FILES ---
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const logDir = path.join(__dirname, 'logs');
+    if (sendConfig.enableLogging && !fs.existsSync(logDir)) {
+        fs.mkdirSync(logDir, { recursive: true });
+    }
+    const successLogPath = path.join(logDir, `success-${timestamp}.txt`);
+    const failedLogPath = path.join(logDir, `failed-${timestamp}.txt`);
 
     // --- 2. PERSIAPAN DAFTAR EMAIL ---
     let allLines = fs.readFileSync(options.emailListPath, 'utf-8').split('\n').map(line => line.trim()).filter(Boolean);
@@ -190,9 +280,42 @@ async function sendMail(options) {
     }
     
     console.log(chalk.yellow(`\nTotal email akan dikirim: ${emailListToSend.length}. Mode Batch: ${enableBatchSending ? 'ON' : 'OFF'}`));
+    if (sendConfig.retryAttempts > 0) {
+        console.log(chalk.yellow(`Retry: ${sendConfig.retryAttempts}x dengan delay ${sendConfig.retryDelay}s`));
+    }
+    if (sendConfig.enableLogging) {
+        console.log(chalk.yellow(`Log files: ${logDir}/`));
+    }
     
     let successCount = 0, failCount = 0, totalSent = 0;
     const successfullySentEmails = new Set();
+    const failedEmails = [];
+
+    // --- Helper: Kirim dengan Retry ---
+    async function sendWithRetry(targetEmail, attempt = 1) {
+        try {
+            const sentDetails = await processAndSendSingleEmail({ ...emailConfig, transporter, targetEmail, selectedHostname });
+            return { success: true, sentDetails };
+        } catch (error) {
+            if (attempt <= sendConfig.retryAttempts) {
+                console.log(chalk.yellow(`   ↻ Retry ${attempt}/${sendConfig.retryAttempts} untuk ${targetEmail}...`));
+                await new Promise(resolve => setTimeout(resolve, sendConfig.retryDelay * 1000));
+                return sendWithRetry(targetEmail, attempt + 1);
+            }
+            return { success: false, error };
+        }
+    }
+
+    // --- Helper: Log ke File ---
+    function logToFile(email, success, errorMsg = '') {
+        if (!sendConfig.enableLogging) return;
+        const timestamp = new Date().toISOString();
+        if (success) {
+            fs.appendFileSync(successLogPath, `[${timestamp}] ${email}\n`);
+        } else {
+            fs.appendFileSync(failedLogPath, `[${timestamp}] ${email} | Error: ${errorMsg}\n`);
+        }
+    }
 
     // --- 3. PROSES PENGIRIMAN SESUAI MODE ---
     if (enableBatchSending) {
@@ -207,16 +330,16 @@ async function sendMail(options) {
             console.log(chalk.bold.blue(`\n--- Mengirim Batch ${i + 1} dari ${emailChunks.length} (${chunk.length} email) ---`));
 
             const promises = chunk.map(async (targetEmail) => {
-                try {
-                    const sentDetails = await processAndSendSingleEmail({ ...emailConfig, transporter, targetEmail, selectedHostname });
-                    totalSent++;
-                    // *** PERBAIKAN DI SINI ***
+                const result = await sendWithRetry(targetEmail);
+                totalSent++;
+                
+                if (result.success) {
                     logSuccess({
                         targetEmail,
-                        fromMail: sentDetails.fromEmail,
-                        fromName: sentDetails.processedSenderName,
-                        subject: sentDetails.processedSubject,
-                        shortlink: sentDetails.finalLink,
+                        fromMail: result.sentDetails.fromEmail,
+                        fromName: result.sentDetails.processedSenderName,
+                        subject: result.sentDetails.processedSubject,
+                        shortlink: result.sentDetails.finalLink,
                         smtpHost: process.env.SMTP_HOST,
                         currentIndex: totalSent,
                         totalEmails: emailListToSend.length,
@@ -225,10 +348,12 @@ async function sendMail(options) {
                     });
                     successCount++;
                     successfullySentEmails.add(targetEmail);
-                } catch (error) {
-                    totalSent++;
-                    logError(error, targetEmail, debugMode);
+                    logToFile(targetEmail, true);
+                } else {
+                    logError(result.error, targetEmail, debugMode);
                     failCount++;
+                    failedEmails.push({ email: targetEmail, error: result.error.message });
+                    logToFile(targetEmail, false, result.error.message);
                 }
             });
             await Promise.all(promises);
@@ -242,21 +367,16 @@ async function sendMail(options) {
         // --- MODE SATU PER SATU ---
         for (let i = 0; i < emailListToSend.length; i++) {
             const targetEmail = emailListToSend[i];
-            try {
-                const sentDetails = await processAndSendSingleEmail({ 
-                    ...emailConfig, 
-                    transporter, 
-                    targetEmail, 
-                    selectedHostname 
-                });
-                totalSent++;
-                // *** PERBAIKAN DI SINI ***
+            const result = await sendWithRetry(targetEmail);
+            totalSent++;
+            
+            if (result.success) {
                 logSuccess({ 
                     targetEmail,
-                    fromMail: sentDetails.fromEmail,
-                    fromName: sentDetails.processedSenderName,
-                    subject: sentDetails.processedSubject,
-                    shortlink: sentDetails.finalLink,
+                    fromMail: result.sentDetails.fromEmail,
+                    fromName: result.sentDetails.processedSenderName,
+                    subject: result.sentDetails.processedSubject,
+                    shortlink: result.sentDetails.finalLink,
                     smtpHost: process.env.SMTP_HOST, 
                     currentIndex: totalSent, 
                     totalEmails: emailListToSend.length, 
@@ -265,10 +385,12 @@ async function sendMail(options) {
                 });
                 successCount++;
                 successfullySentEmails.add(targetEmail);
-            } catch (error) {
-                totalSent++;
-                logError(error, targetEmail, debugMode);
+                logToFile(targetEmail, true);
+            } else {
+                logError(result.error, targetEmail, debugMode);
                 failCount++;
+                failedEmails.push({ email: targetEmail, error: result.error.message });
+                logToFile(targetEmail, false, result.error.message);
             }
 
             if (i < emailListToSend.length - 1) {
@@ -288,10 +410,18 @@ async function sendMail(options) {
         }
     }
 
-    console.log(chalk.bold.blue('\n================ SEMUA PROSES SELESAI ================'));
-    console.log(chalk.bold.green(`  Berhasil terkirim : ${successCount}`));
-    console.log(chalk.bold.red(`  Gagal terkirim    : ${failCount}`));
-    console.log(chalk.bold.blue('======================================================'));
+    // --- 5. RINGKASAN AKHIR ---
+    console.log(chalk.bold.blue('\n╔════════════════════════════════════════════════════════════════╗'));
+    console.log(chalk.bold.blue('║              📊 RINGKASAN PENGIRIMAN EMAIL                     ║'));
+    console.log(chalk.bold.blue('╠════════════════════════════════════════════════════════════════╣'));
+    console.log(chalk.bold.green(`║  ✅ Berhasil terkirim : ${String(successCount).padEnd(37)}  ║`));
+    console.log(chalk.bold.red(`║  ❌ Gagal terkirim    : ${String(failCount).padEnd(37)}  ║`));
+    console.log(chalk.bold.blue('╠════════════════════════════════════════════════════════════════╣'));
+    if (sendConfig.enableLogging) {
+        console.log(chalk.bold.cyan(`║  📄 Log sukses : ${successLogPath.substring(successLogPath.lastIndexOf('/') + 1).padEnd(43)}  ║`));
+        console.log(chalk.bold.cyan(`║  📄 Log gagal  : ${failedLogPath.substring(failedLogPath.lastIndexOf('/') + 1).padEnd(43)}  ║`));
+    }
+    console.log(chalk.bold.blue('╚════════════════════════════════════════════════════════════════╝'));
 }
 
 module.exports = { sendMail };
