@@ -1,0 +1,2 @@
+# Salin ke lists/suppressed.txt. Satu alamat email per baris.
+# Tambahkan penerima unsubscribe, bounce permanen, atau yang tidak boleh dikirim.

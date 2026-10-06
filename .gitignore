@@ -42,3 +42,13 @@ pids/
 
 # Email lists dengan data sensitif (uncomment jika perlu)
 # lists/*.txt
+
+# Multiple SMTP credentials (keep only the public example)
+smtp/*
+!smtp/servers.example.csv
+
+# Runtime locks and local recipient suppression data
+*.beon.lock
+*.json.lock
+lists/*.tmp
+lists/suppressed.txt

@@ -1,0 +1,3 @@
+host,port,user,pass,secure
+smtp.first.example,587,sender@first.example,replace-me,false
+smtp.second.example,465,sender@second.example,replace-me,true

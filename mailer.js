@@ -1,427 +1,190 @@
-// Import library yang dibutuhkan
-const nodemailer = require('nodemailer');
-const fs = require('fs');
-const path = require('path');
-const { faker } = require('@faker-js/faker');
-const chalk = require('chalk');
-const crypto = require('crypto');
-const { URL } = require('url');
+const fs = require('node:fs');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const { loadConfig, read } = require('./src/config');
+const { buildMessage } = require('./src/template');
+const { Journal, atomicWrite, validate } = require('./src/journal');
+const { Registry, classify, errorDetails, wait } = require('./src/smtp');
 
-// Muat variabel dari .env
-require('dotenv').config();
-
-// --- Fungsi Validasi Environment Variables ---
-function validateEnvConfig() {
-    const required = [
-        { key: 'SMTP_HOST', desc: 'SMTP server hostname' },
-        { key: 'SMTP_PORT', desc: 'SMTP server port' },
-        { key: 'SMTP_USER', desc: 'SMTP username/email' },
-        { key: 'SMTP_PASS', desc: 'SMTP password' },
-    ];
-
-    const missing = required.filter(item => !process.env[item.key]);
-    
-    if (missing.length > 0) {
-        console.log(chalk.bold.red('\n╔════════════════════════════════════════════════════════════════╗'));
-        console.log(chalk.bold.red('║           ⚠️  KONFIGURASI .ENV TIDAK LENGKAP                   ║'));
-        console.log(chalk.bold.red('╠════════════════════════════════════════════════════════════════╣'));
-        missing.forEach(item => {
-            console.log(chalk.bold.red(`║  ❌ ${item.key.padEnd(20)} - ${item.desc.padEnd(30)}  ║`));
-        });
-        console.log(chalk.bold.red('╠════════════════════════════════════════════════════════════════╣'));
-        console.log(chalk.bold.red('║  Pastikan file .env sudah dibuat dan diisi dengan benar!       ║'));
-        console.log(chalk.bold.red('║  Lihat .env.example untuk referensi.                           ║'));
-        console.log(chalk.bold.red('╚════════════════════════════════════════════════════════════════╝\n'));
-        return false;
-    }
-
-    // Validasi SMTP_PORT adalah angka
-    const port = parseInt(process.env.SMTP_PORT, 10);
-    if (isNaN(port) || port < 1 || port > 65535) {
-        console.log(chalk.bold.red('\n❌ SMTP_PORT harus berupa angka valid (1-65535)\n'));
-        return false;
-    }
-
-    return true;
+function summary(jobs) {
+    const result = { accepted: 0, rejected: 0, uncertain: 0, pending: 0, suppressed: 0 };
+    for (const job of jobs) result[job.status === 'in_flight' ? 'uncertain' : job.status]++;
+    return result;
 }
-
-// --- Fungsi Test Koneksi SMTP ---
-async function testSmtpConnection(transporter) {
-    try {
-        console.log(chalk.blue('\n🔌 Menguji koneksi SMTP...'));
-        await transporter.verify();
-        console.log(chalk.green('✅ Koneksi SMTP berhasil!\n'));
-        return true;
-    } catch (error) {
-        console.log(chalk.bold.red('\n╔════════════════════════════════════════════════════════════════╗'));
-        console.log(chalk.bold.red('║              ❌ KONEKSI SMTP GAGAL                              ║'));
-        console.log(chalk.bold.red('╠════════════════════════════════════════════════════════════════╣'));
-        console.log(chalk.bold.red(`║  Host: ${(process.env.SMTP_HOST || '').padEnd(52)}  ║`));
-        console.log(chalk.bold.red(`║  Port: ${(process.env.SMTP_PORT || '').padEnd(52)}  ║`));
-        console.log(chalk.bold.red(`║  User: ${(process.env.SMTP_USER || '').substring(0, 50).padEnd(52)}  ║`));
-        console.log(chalk.bold.red('╠════════════════════════════════════════════════════════════════╣'));
-        console.log(chalk.bold.red(`║  Error: ${error.message.substring(0, 50).padEnd(51)}  ║`));
-        console.log(chalk.bold.red('╠════════════════════════════════════════════════════════════════╣'));
-        console.log(chalk.bold.red('║  Periksa kembali:                                              ║'));
-        console.log(chalk.bold.red('║  • Kredensial SMTP (user/password)                             ║'));
-        console.log(chalk.bold.red('║  • Host dan port SMTP                                          ║'));
-        console.log(chalk.bold.red('║  • Koneksi internet                                            ║'));
-        console.log(chalk.bold.red('║  • Firewall/antivirus yang memblokir                           ║'));
-        console.log(chalk.bold.red('╚════════════════════════════════════════════════════════════════╝\n'));
-        return false;
-    }
-}
-
-// --- Fungsi untuk Tampilan Log ---
-function logSuccess(details) {
-    const { targetEmail, fromMail, fromName, subject, shortlink, smtpHost, currentIndex, totalEmails, delay, isBatch } = details;
-    let domainOnly = shortlink;
-    try { const urlObject = new URL(shortlink); domainOnly = urlObject.hostname; } catch (e) { domainOnly = shortlink; }
-    const border = '||' + '='.repeat(75);
-    const line = '||' + '-'.repeat(75);
-    const delayText = isBatch ? 'Antar Batch' : 'Per Email';
-
-    console.log(chalk.bold.white(border));
-    console.log(`${chalk.bold.white('||')} ${chalk.bold.magenta('📨 SEND TO')}         : ${chalk.yellow(targetEmail)}`);
-    console.log(`${chalk.bold.white('||')} ${chalk.bold.magenta('📮 FROM MAIL')}        : ${chalk.cyan(fromMail)}`);
-    console.log(`${chalk.bold.white('||')} ${chalk.bold.magenta('🧒 FROM NAME')}        : ${chalk.blue(fromName)}`);
-    console.log(`${chalk.bold.white('||')} ${chalk.bold.magenta('📝 SUBJECT')}          : ${chalk.cyan(subject)}`);
-    console.log(`${chalk.bold.white('||')} ${chalk.bold.magenta('🔗 SHORTLINK')}        : ${chalk.white(domainOnly)}`);
-    console.log(chalk.bold.white(line));
-    console.log(`${chalk.bold.white('||')} ${chalk.bold.red('💻 SMTP')}             : ${chalk.red(smtpHost)}`);
-    console.log(`${chalk.bold.white('||')} ${chalk.bold.red('🛒 TOTAL SEND')}       : ${chalk.red(`${currentIndex} / ${totalEmails}`)}`);
-    console.log(`${chalk.bold.white('||')} ${chalk.bold.red('🕥 DELAY')}            : ${chalk.red(`${delay} SEC (${delayText})`)}`);
-    console.log(chalk.bold.white(border) + '\n');
-}
-
-function logError(error, targetEmail, isDebug) {
-    const border = '||' + '='.repeat(75);
-    console.log(chalk.bold.red(border));
-    console.log(`${chalk.bold.red('||')} ${chalk.bold.yellow('🔥 ERROR PLEASE CHECK')} `);
-    console.log(chalk.bold.red(border));
-    console.log(`${chalk.bold.red('||')} ${chalk.white('😭 Target Email:')}     ${chalk.yellow(targetEmail)}`);
-    if (error.responseCode) {
-        console.log(`${chalk.bold.red('||')} ${chalk.white('😭 SMTP Code:')}        ${chalk.yellow(error.responseCode)}`);
-    }
-    console.log(`${chalk.bold.red('||')} ${chalk.white('😭 Error Message:')}    ${chalk.yellow(error.message)}`);
-    console.log(chalk.bold.red(border));
-    if (isDebug) {
-        console.log(chalk.bold.yellow('\n--- DEBUG STACK TRACE ---'));
-        console.error(error);
-        console.log(chalk.bold.yellow('-------------------------\n'));
-    } else {
-        console.log('\n');
-    }
-}
-
-function processDynamicPlaceholders(text) {
-    if (!text) return '';
-    const lowercaseChars = 'abcdefghijklmnopqrstuvwxyz';
-    const uppercaseChars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-    const numericChars = '0123456789';
-
-    return text.replace(/{([a-z]+_?\d*|generateid)}/g, (match, placeholder) => {
-        const parts = placeholder.split('_');
-        const type = parts[0];
-        const length = parseInt(parts[1], 10);
-
-        switch (type) {
-            case 'generateid': { return crypto.randomUUID(); }
-            case 'lowercase': { if (isNaN(length)) return match; let r = ''; for (let i = 0; i < length; i++) r += lowercaseChars.charAt(Math.floor(Math.random() * lowercaseChars.length)); return r; }
-            case 'uppercase': { if (isNaN(length)) return match; let r = ''; for (let i = 0; i < length; i++) r += uppercaseChars.charAt(Math.floor(Math.random() * uppercaseChars.length)); return r; }
-            case 'numeric': { if (isNaN(length)) return match; let r = ''; for (let i = 0; i < length; i++) r += numericChars.charAt(Math.floor(Math.random() * numericChars.length)); return r; }
-            case 'mixedupper': { if (isNaN(length)) return match; const c = uppercaseChars + numericChars; let r = ''; for (let i = 0; i < length; i++) r += c.charAt(Math.floor(Math.random() * c.length)); return r; }
-            case 'mixed': { if (isNaN(length)) return match; const c = lowercaseChars + uppercaseChars + numericChars; let r = ''; for (let i = 0; i < length; i++) r += c.charAt(Math.floor(Math.random() * c.length)); return r; }
-            default: { return match; }
-        }
+function removeAccepted(file, expected, jobs) {
+    if (read(file) !== expected) throw new Error('Daftar penerima berubah selama pengiriman; auto-remove dibatalkan. Journal tetap tersimpan.');
+    // Remove an address only when all its occurrences in this campaign are accepted.
+    const accepted = new Set(jobs.filter(job => job.status === 'accepted').map(job => job.email));
+    for (const job of jobs) if (job.status !== 'accepted') accepted.delete(job.email);
+    const remaining = expected.split(/\r?\n/).filter(line => {
+        const value = line.trim();
+        if (!value || value.startsWith('#')) return true;
+        const [local, domain] = value.split('@');
+        const canonical = `${local}@${domain?.toLowerCase()}`;
+        return !accepted.has(canonical);
     });
+    return remaining.join('\n');
 }
-
-// --- Helper untuk data acak ---
-const countries = fs.readFileSync(path.join(__dirname, 'data', 'country.txt'), 'utf-8').split('\n').map(line => line.trim()).filter(Boolean);
-const devices = fs.readFileSync(path.join(__dirname, 'data', 'device.txt'), 'utf-8').split('\n').map(line => line.trim()).filter(Boolean);
-const linkTemplates = fs.readFileSync(path.join(__dirname, 'links', 'links.txt'), 'utf-8').split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('#'));
-const getRandomItem = (arr) => arr[Math.floor(Math.random() * arr.length)];
-
-// --- Fungsi untuk memproses satu email ---
-async function processAndSendSingleEmail(details) {
-    const { 
-        transporter, targetEmail, selectedHostname, 
-        rawSenderNameTemplate, rawSubjectTemplate, rawCustomFromTemplate, 
-        rawLetterTemplate, emailPriority, useMinimalHeaders 
-    } = details;
-
-    const processedSenderName = processDynamicPlaceholders(rawSenderNameTemplate);
-    const processedSubject = processDynamicPlaceholders(rawSubjectTemplate);
-    const fromEmail = rawCustomFromTemplate ? processDynamicPlaceholders(rawCustomFromTemplate) : process.env.SMTP_USER;
-    
-    let processedLetter = processDynamicPlaceholders(rawLetterTemplate);
-    let finalLink = '#';
-    if (linkTemplates.length > 0) {
-        const randomLinkTemplate = getRandomItem(linkTemplates);
-        if (randomLinkTemplate) {
-            let processedLink = randomLinkTemplate.replace(/{email_penerima}/g, targetEmail);
-            finalLink = processDynamicPlaceholders(processedLink);
-        }
+async function sendMail(options = {}, dependencies = {}) {
+    const config = loadConfig(dependencies.env || process.env, options, dependencies.root);
+    const log = dependencies.log || console.log;
+    if (options.dryRun) {
+        const resumed = options.resume ? JSON.parse(read(path.resolve(config.root, options.resume))) : null;
+        if (resumed) validate(resumed);
+        const recipients = resumed ? resumed.jobs.filter(job => job.status === 'pending').map(job => job.email) : config.recipients;
+        const target = recipients.find(item => !config.suppressed.has(item));
+        if (!target) throw new Error('Tidak ada penerima untuk preview');
+        const message = resumed ? resumed.jobs.find(job => job.email === target && job.status === 'pending').message : buildMessage(config, target, config.servers[0].fromEmail, config.servers[0].replyTo);
+        // Validate every recipient/template before reporting a valid preview.
+        if (!options.resume) for (const recipient of recipients.slice(1)) buildMessage(config, recipient, config.servers[0].fromEmail, config.servers[0].replyTo);
+        const previewPath = path.resolve(config.root, options.previewPath || 'logs/preview.html');
+        fs.mkdirSync(path.dirname(previewPath), { recursive: true, mode: 0o700 });
+        atomicWrite(previewPath, message.html);
+        atomicWrite(`${previewPath}.json`, JSON.stringify(message, null, 2) + '\n');
+        log(`Preview: ${previewPath}\nSubject: ${message.subject}\nPenerima: ${recipients.length}; suppression: ${config.suppressedCount}`);
+        return { dryRun: true, previewPath, message };
     }
-    
-    const recipientName = targetEmail.split('@')[0].replace(/[\._0-9]/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-    processedLetter = processedLetter
-        .replace(/{email_penerima}/g, targetEmail).replace(/{nama_penerima}/g, recipientName)
-        .replace(/{nama_pengirim}/g, processedSenderName).replace(/{tanggal}/g, new Date().toLocaleDateString('id-ID', { dateStyle: 'full' }))
-        .replace(/{negara}/g, getRandomItem(countries)).replace(/{perangkat}/g, getRandomItem(devices))
-        .replace(/{email_acak}/g, faker.internet.email()).replace(/{nama_acak}/g, faker.person.fullName())
-        .replace(/{shortlink}/g, finalLink);
-
-    const messageId = `<${crypto.randomBytes(16).toString('hex')}@${selectedHostname}>`;
-    const headers = { 'Message-ID': messageId };
-
-    if (!useMinimalHeaders) {
-        const priorityMap = { high: '1 (Highest)', normal: '3 (Normal)', low: '5 (Lowest)' };
-        headers['X-Priority'] = priorityMap[emailPriority] || '3 (Normal)';
-        // headers['X-Mailer'] = 'nodemailer';
-        headers['X-NSS'] = crypto.randomBytes(16).toString('hex');
-    }
-
-    const mailOptions = { 
-        from: `"${processedSenderName}" <${fromEmail}>`, to: targetEmail, 
-        subject: processedSubject, html: processedLetter, headers: headers
-    };
-
-    await transporter.sendMail(mailOptions);
-    return { fromEmail, processedSenderName, processedSubject, finalLink };
-}
-
-
-// --- Fungsi Utama Pengiriman Email ---
-async function sendMail(options) {
-    // --- 0. VALIDASI KONFIGURASI ---
-    if (!validateEnvConfig()) {
-        console.log(chalk.red('Proses dibatalkan karena konfigurasi tidak valid.'));
-        return;
-    }
-
-    // --- 1. MEMBACA SEMUA KONFIGURASI DARI .ENV ---
-    const enableBatchSending = process.env.ENABLE_BATCH_SENDING === 'true';
-    const debugMode = process.env.DEBUG_MODE === 'true';
-    const retryAttempts = parseInt(process.env.RETRY_ATTEMPTS, 10) || 0;
-    const retryDelay = parseInt(process.env.RETRY_DELAY_SECONDS, 10) || 3;
-    const enableLogging = process.env.ENABLE_FILE_LOGGING === 'true';
-    const rawHostnameTemplate = process.env.SMTP_HOSTNAME || 'localhost';
-    
-    const selectedHostname = processDynamicPlaceholders(rawHostnameTemplate);
-    if (!debugMode) { console.log(chalk.blue(`\nHostname untuk sesi ini: ${selectedHostname}`)); }
-
-    const transporterConfig = {
-        pool: enableBatchSending, // Menggunakan pool hanya jika batch aktif
-        host: process.env.SMTP_HOST,
-        port: parseInt(process.env.SMTP_PORT, 10),
-        secure: process.env.SMTP_SECURE === 'true',
-        auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
-        tls: { rejectUnauthorized: false },
-        name: selectedHostname,
-    };
-
-    if (debugMode) {
-        console.log(chalk.bold.yellow.inverse('\n DEBUG MODE IS ON \n'));
-        transporterConfig.logger = true;
-        transporterConfig.debug = true;
-    }
-
-    const transporter = nodemailer.createTransport(transporterConfig);
-
-    // --- TEST KONEKSI SMTP ---
-    const isConnected = await testSmtpConnection(transporter);
-    if (!isConnected) {
-        console.log(chalk.red('Proses dibatalkan karena koneksi SMTP gagal.'));
-        return;
-    }
-
-    const emailConfig = {
-        rawSenderNameTemplate: process.env.SENDER_NAME || 'Pengirim Default',
-        rawSubjectTemplate: process.env.EMAIL_SUBJECT || 'Subjek Default',
-        rawCustomFromTemplate: process.env.CUSTOM_FROM_EMAIL,
-        letterPath: path.join(__dirname, process.env.LETTER_PATH || 'letters/letter.html'),
-        emailPriority: process.env.EMAIL_PRIORITY || 'normal',
-        useMinimalHeaders: process.env.USE_MINIMAL_HEADERS === 'true',
-    };
-    emailConfig.rawLetterTemplate = fs.readFileSync(emailConfig.letterPath, 'utf-8');
-
-    const sendConfig = {
-        batchSize: parseInt(process.env.BATCH_SIZE, 10) || 10,
-        delay: parseInt(process.env.SEND_DELAY_SECONDS, 10) || 1,
-        removeDuplicates: process.env.REMOVE_DUPLICATE_EMAILS === 'true',
-        removeSentEmails: process.env.REMOVE_SENT_EMAIL_FROM_LIST === 'true',
-        retryAttempts,
-        retryDelay,
-        enableLogging,
-    };
-
-    // --- SETUP LOG FILES ---
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const logDir = path.join(__dirname, 'logs');
-    if (sendConfig.enableLogging && !fs.existsSync(logDir)) {
-        fs.mkdirSync(logDir, { recursive: true });
-    }
-    const successLogPath = path.join(logDir, `success-${timestamp}.txt`);
-    const failedLogPath = path.join(logDir, `failed-${timestamp}.txt`);
-
-    // --- 2. PERSIAPAN DAFTAR EMAIL ---
-    let allLines = fs.readFileSync(options.emailListPath, 'utf-8').split('\n').map(line => line.trim()).filter(Boolean);
-    let emailListToSend;
-    if (sendConfig.removeDuplicates) {
-        const originalCount = allLines.length;
-        emailListToSend = [...new Set(allLines)];
-        if (originalCount !== emailListToSend.length) {
-            console.log(chalk.blue(`\nMenghapus email duplikat... Asli: ${originalCount}, Unik: ${emailListToSend.length}`));
-        }
-    } else {
-        emailListToSend = allLines;
-    }
-    
-    console.log(chalk.yellow(`\nTotal email akan dikirim: ${emailListToSend.length}. Mode Batch: ${enableBatchSending ? 'ON' : 'OFF'}`));
-    if (sendConfig.retryAttempts > 0) {
-        console.log(chalk.yellow(`Retry: ${sendConfig.retryAttempts}x dengan delay ${sendConfig.retryDelay}s`));
-    }
-    if (sendConfig.enableLogging) {
-        console.log(chalk.yellow(`Log files: ${logDir}/`));
-    }
-    
-    let successCount = 0, failCount = 0, totalSent = 0;
-    const successfullySentEmails = new Set();
-    const failedEmails = [];
-
-    // --- Helper: Kirim dengan Retry ---
-    async function sendWithRetry(targetEmail, attempt = 1) {
-        try {
-            const sentDetails = await processAndSendSingleEmail({ ...emailConfig, transporter, targetEmail, selectedHostname });
-            return { success: true, sentDetails };
-        } catch (error) {
-            if (attempt <= sendConfig.retryAttempts) {
-                console.log(chalk.yellow(`   ↻ Retry ${attempt}/${sendConfig.retryAttempts} untuk ${targetEmail}...`));
-                await new Promise(resolve => setTimeout(resolve, sendConfig.retryDelay * 1000));
-                return sendWithRetry(targetEmail, attempt + 1);
+    const control = { stopped: false };
+    const onSignal = () => { control.stopped = true; log('Menghentikan dispatch baru; menunggu pengiriman aktif. Gunakan --resume untuk melanjutkan.'); };
+    const signals = dependencies.signals || process;
+    signals.on('SIGINT', onSignal); signals.on('SIGTERM', onSignal);
+    let journal, registry, listLockFd, listLock, originalList;
+    let fatal;
+    try {
+        const resumePath = options.resume ? path.resolve(config.root, options.resume) : null;
+        const id = crypto.randomUUID();
+        const journalPath = resumePath || path.join(config.journalDir, `${id}.json`);
+        fs.mkdirSync(path.dirname(journalPath), { recursive: true, mode: 0o700 });
+        const existing = resumePath ? JSON.parse(read(resumePath)) : null;
+        const listPath = existing?.listPath || config.listPath;
+        originalList = read(listPath);
+        listLock = `${listPath}.beon.lock`;
+        try { listLockFd = fs.openSync(listLock, 'wx', 0o600); }
+        catch { throw new Error(`Daftar sedang terkunci: ${listLock}. Pastikan proses lama berhenti sebelum menghapus lock stale.`); }
+        fs.writeFileSync(listLockFd, JSON.stringify({ pid: process.pid, hostname: require('node:os').hostname() }));
+        const data = existing || {
+            version: 1, id, createdAt: new Date().toISOString(), listPath,
+            jobs: config.recipients.map((target, i) => ({
+                id: `${id}-${i}`, email: target, status: 'pending', attempts: 0,
+                message: buildMessage(config, target, config.servers[0].fromEmail, config.servers[0].replyTo), history: [],
+            })),
+        };
+        journal = new Journal(journalPath, data);
+        // Reconcile a crash between the durable cleanup intent and list rename.
+        const hash = value => crypto.createHash('sha256').update(value).digest('hex');
+        if (journal.data.listCleanup) {
+            const cleanup = journal.data.listCleanup;
+            if (hash(originalList) === cleanup.beforeHash) {
+                atomicWrite(listPath, cleanup.after);
+                originalList = cleanup.after;
+            } else if (hash(originalList) !== hash(cleanup.after)) {
+                throw new Error('Daftar berubah setelah rencana auto-remove; periksa journal sebelum resume.');
             }
-            return { success: false, error };
         }
-    }
-
-    // --- Helper: Log ke File ---
-    function logToFile(email, success, errorMsg = '') {
-        if (!sendConfig.enableLogging) return;
-        const timestamp = new Date().toISOString();
-        if (success) {
-            fs.appendFileSync(successLogPath, `[${timestamp}] ${email}\n`);
-        } else {
-            fs.appendFileSync(failedLogPath, `[${timestamp}] ${email} | Error: ${errorMsg}\n`);
+        for (const job of journal.data.jobs) if (job.status === 'pending' && config.suppressed.has(job.email)) job.status = 'suppressed';
+        journal.save();
+        log(`Journal: ${journalPath}\nPenerima: ${journal.data.jobs.length}; suppression baru: ${config.suppressedCount}`);
+        if (config.debug) log('DEBUG_MODE: diagnostik status aktif; raw SMTP traffic dinonaktifkan agar kredensial/konten tidak tercetak.');
+        const pending = journal.data.jobs.filter(job => job.status === 'pending');
+        if (pending.length) {
+            registry = new Registry(config, control, dependencies.createTransport, log);
+            await registry.verify();
         }
-    }
-
-    // --- 3. PROSES PENGIRIMAN SESUAI MODE ---
-    if (enableBatchSending) {
-        // --- MODE BATCH ---
-        const emailChunks = [];
-        for (let i = 0; i < emailListToSend.length; i += sendConfig.batchSize) {
-            emailChunks.push(emailListToSend.slice(i, i + sendConfig.batchSize));
+        const persist = () => {
+            try { journal.save(); }
+            catch { control.stopped = true; throw new Error(`Gagal menyimpan checkpoint ${journalPath}. Dispatch dihentikan; periksa accepted/uncertain sebelum melanjutkan.`); }
+        };
+        function logResult(job) {
+            log(`${job.status.toUpperCase()} ${job.email} | SMTP ${job.smtpId || '-'} | attempt ${job.attempts}`);
+            if (!config.logging) return;
+            try {
+                fs.mkdirSync(config.logDir, { recursive: true, mode: 0o700 });
+                const file = path.join(config.logDir, `${job.status}-${journal.data.id}.txt`);
+                fs.appendFileSync(file, `${JSON.stringify({ time: new Date().toISOString(), email: job.email, smtpId: job.smtpId, messageId: job.message.messageId, result: job.result })}\n`, { mode: 0o600 });
+            } catch { control.stopped = true; throw new Error('Log tambahan gagal ditulis; hasil SMTP tersimpan dalam journal. Dispatch dihentikan.'); }
         }
-
-        for (let i = 0; i < emailChunks.length; i++) {
-            const chunk = emailChunks[i];
-            console.log(chalk.bold.blue(`\n--- Mengirim Batch ${i + 1} dari ${emailChunks.length} (${chunk.length} email) ---`));
-
-            const promises = chunk.map(async (targetEmail) => {
-                const result = await sendWithRetry(targetEmail);
-                totalSent++;
-                
-                if (result.success) {
-                    logSuccess({
-                        targetEmail,
-                        fromMail: result.sentDetails.fromEmail,
-                        fromName: result.sentDetails.processedSenderName,
-                        subject: result.sentDetails.processedSubject,
-                        shortlink: result.sentDetails.finalLink,
-                        smtpHost: process.env.SMTP_HOST,
-                        currentIndex: totalSent,
-                        totalEmails: emailListToSend.length,
-                        delay: sendConfig.delay,
-                        isBatch: true
-                    });
-                    successCount++;
-                    successfullySentEmails.add(targetEmail);
-                    logToFile(targetEmail, true);
-                } else {
-                    logError(result.error, targetEmail, debugMode);
-                    failCount++;
-                    failedEmails.push({ email: targetEmail, error: result.error.message });
-                    logToFile(targetEmail, false, result.error.message);
+        async function dispatch(job) {
+            while (!control.stopped) {
+                if (job.attempts >= config.retries + 1) { job.status = 'rejected'; persist(); logResult(job); return; }
+                const entry = await registry.acquire();
+                if (!entry) return;
+                try {
+                    if (control.stopped) return;
+                    const previousFrom = job.message.from.address;
+                    job.message.from.address = entry.server.fromEmail;
+                    // Bind reply routing to the first actual server; failover/resume keeps it stable.
+                    if (job.attempts === 0) {
+                        if (entry.server.replyTo) job.message.replyTo = entry.server.replyTo;
+                        else delete job.message.replyTo;
+                    }
+                    job.smtpId = entry.server.id; job.attempts++; job.status = 'in_flight';
+                    job.history.push({ time: new Date().toISOString(), attempt: job.attempts, smtpId: job.smtpId, from: job.message.from.address, replyTo: job.message.replyTo || null });
+                    if (previousFrom !== job.message.from.address) log(`From ${job.email}: ${previousFrom} → ${job.message.from.address} (${job.smtpId})`);
+                    persist(); // Must be durable before starting SMTP I/O.
+                    let outcome;
+                    try {
+                        // Whitelist persisted message fields: never allow raw/attachments from a journal.
+                        const message = job.message;
+                        const info = await entry.transport.sendMail({
+                            from: message.from, to: job.email, subject: message.subject, html: message.html, text: message.text,
+                            messageId: message.messageId,
+                            replyTo: message.replyTo,
+                            headers: message.headers?.['X-Priority'] ? { 'X-Priority': String(message.headers['X-Priority']).replace(/[\r\n]/g, '') } : {},
+                            list: message.list?.unsubscribe?.url ? { unsubscribe: { url: message.list.unsubscribe.url } } : undefined,
+                            disableFileAccess: true, disableUrlAccess: true,
+                        });
+                        const accepted = (info.accepted || []).map(value => typeof value === 'string' ? value : value.address);
+                        const rejected = (info.rejected || []).map(value => typeof value === 'string' ? value : value.address);
+                        job.result = { ...errorDetails({ response: info.response }, config.servers), accepted, rejected, messageId: info.messageId || message.messageId };
+                        job.status = accepted.includes(job.email) ? 'accepted' : rejected.includes(job.email) ? 'rejected' : 'uncertain';
+                        outcome = { retry: false };
+                    } catch (error) {
+                        outcome = classify(error);
+                        job.status = outcome.status;
+                        job.result = errorDetails(error, config.servers);
+                        if (outcome.disable) entry.healthy = false;
+                        if (outcome.retry) entry.cooldownUntil = Date.now() + config.cooldown;
+                    }
+                    const retry = outcome.retry && job.attempts < config.retries + 1;
+                    if (retry) job.status = 'pending';
+                    job.history.at(-1).status = job.status;
+                    job.history.at(-1).result = job.result;
+                    persist(); // Logging errors must never be treated as SMTP failures/retried.
+                    if (!retry) { logResult(job); return; }
+                } finally { registry.release(entry); }
+                await wait(Math.min(config.retryDelay * 2 ** (job.attempts - 1), 3600000), control);
+            }
+        }
+        const chunkSize = config.batch ? config.batchSize : 1;
+        for (let start = 0; start < pending.length && !control.stopped; start += chunkSize) {
+            const chunk = pending.slice(start, start + chunkSize);
+            let cursor = 0;
+            const outcomes = await Promise.allSettled(Array.from({ length: Math.min(config.concurrency, chunk.length) }, async () => {
+                while (!control.stopped && cursor < chunk.length) {
+                    const job = chunk[cursor++];
+                    try { await dispatch(job); }
+                    catch (error) { control.stopped = true; throw error; }
                 }
-            });
-            await Promise.all(promises);
-
-            if (i < emailChunks.length - 1) {
-                console.log(chalk.yellow(`--- Batch ${i + 1} selesai. Jeda selama ${sendConfig.delay} detik... ---`));
-                await new Promise(resolve => setTimeout(resolve, sendConfig.delay * 1000));
-            }
+            }));
+            const rejected = outcomes.find(result => result.status === 'rejected');
+            if (rejected) { fatal = rejected.reason; break; }
+            if (start + chunkSize < pending.length) await wait(config.delay, control);
         }
-    } else {
-        // --- MODE SATU PER SATU ---
-        for (let i = 0; i < emailListToSend.length; i++) {
-            const targetEmail = emailListToSend[i];
-            const result = await sendWithRetry(targetEmail);
-            totalSent++;
-            
-            if (result.success) {
-                logSuccess({ 
-                    targetEmail,
-                    fromMail: result.sentDetails.fromEmail,
-                    fromName: result.sentDetails.processedSenderName,
-                    subject: result.sentDetails.processedSubject,
-                    shortlink: result.sentDetails.finalLink,
-                    smtpHost: process.env.SMTP_HOST, 
-                    currentIndex: totalSent, 
-                    totalEmails: emailListToSend.length, 
-                    delay: sendConfig.delay, 
-                    isBatch: false 
-                });
-                successCount++;
-                successfullySentEmails.add(targetEmail);
-                logToFile(targetEmail, true);
-            } else {
-                logError(result.error, targetEmail, debugMode);
-                failCount++;
-                failedEmails.push({ email: targetEmail, error: result.error.message });
-                logToFile(targetEmail, false, result.error.message);
-            }
-
-            if (i < emailListToSend.length - 1) {
-                await new Promise(resolve => setTimeout(resolve, sendConfig.delay * 1000));
-            }
+        if (config.removeSent && !fatal && journal.data.jobs.some(job => job.status === 'accepted')) {
+            const after = removeAccepted(listPath, originalList, journal.data.jobs);
+            journal.data.listCleanup = { beforeHash: hash(originalList), after };
+            persist();
+            atomicWrite(listPath, after);
         }
+        const result = { ...summary(journal.data.jobs), journalPath, interrupted: control.stopped };
+        log(`Ringkasan: SMTP accepted=${result.accepted}, rejected=${result.rejected}, uncertain=${result.uncertain}, pending=${result.pending}, suppressed=${result.suppressed}`);
+        if (fatal) throw fatal;
+        return result;
+    } finally {
+        if (registry) registry.close();
+        if (journal) journal.close();
+        if (listLockFd !== undefined) { fs.closeSync(listLockFd); fs.unlinkSync(listLock); }
+        signals.removeListener('SIGINT', onSignal); signals.removeListener('SIGTERM', onSignal);
     }
-    
-    // --- 4. PERBARUI FILE LIST SETELAH SEMUA SELESAI ---
-    if (sendConfig.removeSentEmails && successfullySentEmails.size > 0) {
-        const remainingEmails = allLines.filter(email => !successfullySentEmails.has(email));
-        try {
-            fs.writeFileSync(options.emailListPath, remainingEmails.join('\n'));
-            console.log(chalk.bold.blue(`\nBerhasil memperbarui file list. ${successfullySentEmails.size} email yang terkirim telah dihapus.`));
-        } catch (writeError) {
-            console.error(chalk.bold.red('\nGagal memperbarui file list email:'), writeError);
-        }
-    }
-
-    // --- 5. RINGKASAN AKHIR ---
-    console.log(chalk.bold.blue('\n╔════════════════════════════════════════════════════════════════╗'));
-    console.log(chalk.bold.blue('║              📊 RINGKASAN PENGIRIMAN EMAIL                     ║'));
-    console.log(chalk.bold.blue('╠════════════════════════════════════════════════════════════════╣'));
-    console.log(chalk.bold.green(`║  ✅ Berhasil terkirim : ${String(successCount).padEnd(37)}  ║`));
-    console.log(chalk.bold.red(`║  ❌ Gagal terkirim    : ${String(failCount).padEnd(37)}  ║`));
-    console.log(chalk.bold.blue('╠════════════════════════════════════════════════════════════════╣'));
-    if (sendConfig.enableLogging) {
-        console.log(chalk.bold.cyan(`║  📄 Log sukses : ${successLogPath.substring(successLogPath.lastIndexOf('/') + 1).padEnd(43)}  ║`));
-        console.log(chalk.bold.cyan(`║  📄 Log gagal  : ${failedLogPath.substring(failedLogPath.lastIndexOf('/') + 1).padEnd(43)}  ║`));
-    }
-    console.log(chalk.bold.blue('╚════════════════════════════════════════════════════════════════╝'));
 }
-
-module.exports = { sendMail };
+module.exports = { sendMail, removeAccepted, summary };
